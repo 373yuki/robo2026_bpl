@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>梅花林 秘伝書配置シミュレータ</title>
+  <title>梅花林エリア 秘伝書配置シミュレータ</title>
   <style>
     :root {
       --ink: #17221b;
@@ -147,6 +147,12 @@
       transition: transform .18s ease, background .25s ease, border-color .25s ease;
     }
 
+    .manual-mode .cell { cursor: pointer; }
+    .manual-mode .cell:hover {
+      transform: translateY(-2px);
+      border-color: var(--green);
+    }
+
     .cell.changed { animation: place .38s ease both; }
     @keyframes place {
       0% { transform: scale(.92); opacity: .55; }
@@ -236,6 +242,48 @@
       display: grid;
       gap: 14px;
       margin-top: 22px;
+    }
+
+    .placement-settings {
+      display: grid;
+      gap: 10px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: rgba(255,255,255,.55);
+    }
+
+    .placement-settings label {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .placement-settings select { flex: 1; }
+    .manual-controls[hidden], .auto-controls[hidden] { display: none; }
+    .manual-controls { display: grid; gap: 10px; }
+
+    .placement-tools {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 7px;
+    }
+
+    .placement-tool { min-width: 0; padding: 0 8px; }
+    .placement-tool.selected {
+      color: #fff;
+      border-color: var(--green);
+      background: var(--green);
+    }
+
+    .placement-help {
+      margin: 0;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.6;
     }
 
     button, select, input {
@@ -406,8 +454,8 @@
   <div class="page">
     <header>
       <div>
-        <p class="eyebrow">Robocon Placement Lab</p>
-        <h1>梅花林 秘伝書配置シミュレータ</h1>
+        <p class="eyebrow">Robocon 2026 Book Placement Simulator</p>
+        <h1>梅花林エリア 秘伝書配置シミュレータ</h1>
       </div>
       <div class="total">
         <span>有効な配置パターン</span>
@@ -435,12 +483,33 @@
         </div>
 
         <div class="controls">
-          <div class="control-row">
+          <div class="placement-settings">
+            <label>配置モード
+              <select id="placementMode">
+                <option value="auto">自動配置</option>
+                <option value="manual">手動配置</option>
+              </select>
+            </label>
+            <div class="manual-controls" id="manualControls" hidden>
+              <div class="placement-tools" id="placementTools">
+                <button class="placement-tool selected" data-type="empty">EMPTY</button>
+                <button class="placement-tool" data-type="r1">R1</button>
+                <button class="placement-tool" data-type="r2">R2</button>
+                <button class="placement-tool" data-type="fake">F</button>
+              </div>
+              <div class="control-row">
+                <button class="grow" id="copyPatternButton">現在の自動配置をコピー</button>
+                <button id="clearPatternButton">全消去</button>
+              </div>
+              <p class="placement-help">種類を選び、盤面のマスをクリックして配置します。同じ種類をもう一度置くとEMPTYになります。</p>
+            </div>
+          </div>
+          <div class="control-row auto-controls" id="autoMoveControls">
             <button id="prevButton" aria-label="前の配置">← 前へ</button>
             <button class="primary grow" id="randomButton">ランダム配置</button>
             <button id="nextButton" aria-label="次の配置">次へ →</button>
           </div>
-          <div class="control-row">
+          <div class="control-row auto-controls" id="autoFilterControls">
             <select class="grow" id="filterSelect" aria-label="配置パターンの絞り込み">
               <option value="all">すべてのパターン</option>
               <option value="A">CASE A：フェイクが 5・8</option>
@@ -571,6 +640,10 @@
     const jumpInput = document.querySelector("#jumpInput");
     const status = document.querySelector("#status");
     const playButton = document.querySelector("#playButton");
+    const placementMode = document.querySelector("#placementMode");
+    const manualControls = document.querySelector("#manualControls");
+    const autoMoveControls = document.querySelector("#autoMoveControls");
+    const autoFilterControls = document.querySelector("#autoFilterControls");
     const r1RouteMode = document.querySelector("#r1RouteMode");
     const r1CollectCount = document.querySelector("#r1CollectCount");
     const r2CollectCount = document.querySelector("#r2CollectCount");
@@ -584,6 +657,8 @@
     let previousTypes = Array(12).fill("");
     let manualR1Targets = [];
     let manualPatternKey = "";
+    let placementTool = "empty";
+    let manualPattern = null;
 
     for (const position of positions) {
       const cell = document.createElement("div");
@@ -591,6 +666,60 @@
       cell.dataset.position = position;
       cell.innerHTML = `<span class="cell-number">${position}</span><span class="empty-mark">EMPTY</span>`;
       board.appendChild(cell);
+    }
+
+    function clonePattern(pattern) {
+      return {
+        fake: pattern.fake,
+        r1: [...pattern.r1],
+        r2: [...pattern.r2],
+        case: pattern.case
+      };
+    }
+
+    function currentPattern() {
+      return placementMode.value === "manual" ? manualPattern : visiblePatterns[currentIndex];
+    }
+
+    function manualPatternCounts(pattern) {
+      return `R1 ${pattern.r1.length}/3・R2 ${pattern.r2.length}/4・F ${pattern.fake ? 1 : 0}/1`;
+    }
+
+    function placeManually(position) {
+      const currentType = manualPattern.r1.includes(position)
+        ? "r1"
+        : manualPattern.r2.includes(position)
+          ? "r2"
+          : manualPattern.fake === position ? "fake" : "empty";
+      const nextType = currentType === placementTool ? "empty" : placementTool;
+
+      if (nextType === "r1" && [5, 8].includes(position)) {
+        status.textContent = "R1は5番・8番には配置できません。";
+        return;
+      }
+      if (nextType === "fake" && [1, 2, 3].includes(position)) {
+        status.textContent = "フェイクは1番・2番・3番には配置できません。";
+        return;
+      }
+      if (nextType === "r1" && currentType !== "r1" && manualPattern.r1.length >= 3) {
+        status.textContent = "R1は3個まで配置できます。";
+        return;
+      }
+      if (nextType === "r2" && currentType !== "r2" && manualPattern.r2.length >= 4) {
+        status.textContent = "R2は4個まで配置できます。";
+        return;
+      }
+
+      manualPattern.r1 = manualPattern.r1.filter(item => item !== position);
+      manualPattern.r2 = manualPattern.r2.filter(item => item !== position);
+      if (manualPattern.fake === position) manualPattern.fake = null;
+      if (nextType === "r1") manualPattern.r1.push(position);
+      if (nextType === "r2") manualPattern.r2.push(position);
+      if (nextType === "fake") manualPattern.fake = position;
+      manualPattern.r1.sort((a, b) => a - b);
+      manualPattern.r2.sort((a, b) => a - b);
+      manualPattern.case = [5, 8].includes(manualPattern.fake) ? "A" : "B";
+      render();
     }
 
     function comma(number) {
@@ -864,7 +993,7 @@
     }
 
     function render() {
-      const pattern = visiblePatterns[currentIndex];
+      const pattern = currentPattern();
       if (!pattern) return;
 
       document.querySelectorAll(".cell").forEach((cell, index) => {
@@ -886,13 +1015,21 @@
         previousTypes[index] = type;
       });
 
-      currentNumber.textContent = comma(currentIndex + 1);
-      filteredCount.textContent = comma(visiblePatterns.length);
+      const isManual = placementMode.value === "manual";
+      board.classList.toggle("manual-mode", isManual);
+      currentNumber.textContent = isManual ? "手動" : comma(currentIndex + 1);
+      filteredCount.textContent = isManual ? "1" : comma(visiblePatterns.length);
       jumpInput.max = visiblePatterns.length;
       jumpInput.value = currentIndex + 1;
-      caseBadge.textContent = `CASE ${pattern.case} / F = ${pattern.fake}`;
-      caseBadge.style.background = pattern.case === "A" ? "var(--fake)" : "var(--green)";
-      status.textContent = `R1: ${pattern.r1.join("・")}　R2: ${pattern.r2.join("・")}　フェイク: ${pattern.fake}`;
+      caseBadge.textContent = isManual
+        ? `MANUAL / ${manualPatternCounts(pattern)}`
+        : `CASE ${pattern.case} / F = ${pattern.fake}`;
+      caseBadge.style.background = isManual
+        ? "var(--green)"
+        : pattern.case === "A" ? "var(--fake)" : "var(--green)";
+      status.textContent = isManual
+        ? `手動配置：${manualPatternCounts(pattern)}`
+        : `R1: ${pattern.r1.join("・")}　R2: ${pattern.r2.join("・")}　フェイク: ${pattern.fake}`;
       renderRoutes(pattern);
     }
 
@@ -912,6 +1049,44 @@
     document.querySelector("#nextButton").addEventListener("click", () => move(1));
     document.querySelector("#randomButton").addEventListener("click", () => {
       currentIndex = Math.floor(Math.random() * visiblePatterns.length);
+      render();
+    });
+
+    board.addEventListener("click", event => {
+      if (placementMode.value !== "manual") return;
+      const cell = event.target.closest(".cell");
+      if (cell) placeManually(Number(cell.dataset.position));
+    });
+
+    document.querySelector("#placementTools").addEventListener("click", event => {
+      const button = event.target.closest(".placement-tool");
+      if (!button) return;
+      placementTool = button.dataset.type;
+      document.querySelectorAll(".placement-tool").forEach(tool => {
+        tool.classList.toggle("selected", tool === button);
+      });
+    });
+
+    placementMode.addEventListener("change", () => {
+      stopPlaying();
+      const isManual = placementMode.value === "manual";
+      if (isManual && !manualPattern) manualPattern = clonePattern(visiblePatterns[currentIndex]);
+      manualControls.hidden = !isManual;
+      autoMoveControls.hidden = isManual;
+      autoFilterControls.hidden = isManual;
+      previousTypes.fill("");
+      render();
+    });
+
+    document.querySelector("#copyPatternButton").addEventListener("click", () => {
+      manualPattern = clonePattern(visiblePatterns[currentIndex]);
+      previousTypes.fill("");
+      render();
+    });
+
+    document.querySelector("#clearPatternButton").addEventListener("click", () => {
+      manualPattern = { fake: null, r1: [], r2: [], case: "B" };
+      previousTypes.fill("");
       render();
     });
 
