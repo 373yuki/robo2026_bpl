@@ -286,6 +286,38 @@
 
     .route-settings select { width: 100%; }
 
+    .r1-picker {
+      display: grid;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .r1-picker > span {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .r1-options {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 7px;
+    }
+
+    .r1-option {
+      min-height: 34px;
+      padding: 0 12px;
+      color: var(--r1);
+      border-color: #edbaa9;
+      background: #fff;
+    }
+
+    .r1-option.selected {
+      color: #fff;
+      border-color: var(--r1);
+      background: var(--r1);
+    }
+
     .route-results {
       display: grid;
       gap: 10px;
@@ -426,6 +458,12 @@
         <section class="card info-card">
           <h2>回収ルート</h2>
           <div class="route-settings">
+            <label>R1 回収方法
+              <select id="r1RouteMode">
+                <option value="optimal">自動最適</option>
+                <option value="manual">手動選択</option>
+              </select>
+            </label>
             <label>R1 回収数
               <select id="r1CollectCount">
                 <option value="0">0個</option>
@@ -444,6 +482,10 @@
               </select>
             </label>
           </div>
+          <div class="r1-picker" id="r1Picker">
+            <span>R1の回収対象</span>
+            <div class="r1-options" id="r1Options"></div>
+          </div>
           <div class="route-results">
             <div class="route-result">
               <b style="color:var(--r1)">R1 最短回収順</b>
@@ -454,7 +496,7 @@
               <p id="r2RouteResult">計算中...</p>
             </div>
           </div>
-          <p class="route-note">上下左右へ移動し、R1の後にR2が走行する前提です。R2はEMPTY、R1回収後のマス、今回回収するR2マスだけを通行します。F、残存R1、回収しないR2は通行不可です。</p>
+          <p class="route-note">自動最適は、R2の回収数を最大化してから総移動距離を短くします。R2はEMPTY、R1回収後のマス、今回回収するR2マスだけを通行します。</p>
         </section>
 
         <section class="card info-card">
@@ -529,8 +571,10 @@
     const jumpInput = document.querySelector("#jumpInput");
     const status = document.querySelector("#status");
     const playButton = document.querySelector("#playButton");
+    const r1RouteMode = document.querySelector("#r1RouteMode");
     const r1CollectCount = document.querySelector("#r1CollectCount");
     const r2CollectCount = document.querySelector("#r2CollectCount");
+    const r1Options = document.querySelector("#r1Options");
     const r1RouteResult = document.querySelector("#r1RouteResult");
     const r2RouteResult = document.querySelector("#r2RouteResult");
 
@@ -538,6 +582,8 @@
     let currentIndex = 0;
     let playTimer = null;
     let previousTypes = Array(12).fill("");
+    let manualR1Targets = [];
+    let manualPatternKey = "";
 
     for (const position of positions) {
       const cell = document.createElement("div");
@@ -599,13 +645,19 @@
       return { path, distance: path.length - 1 };
     }
 
-    function bestR1Route(pattern, requestedCount) {
+    function bestR1Route(pattern, requestedCount, fixedTargets = null) {
       const available = pattern.r1;
-      const count = Math.min(requestedCount, available.length);
+      const selected = fixedTargets
+        ? fixedTargets.filter(position => available.includes(position)).slice(0, requestedCount)
+        : available;
+      const count = fixedTargets
+        ? selected.length
+        : Math.min(requestedCount, available.length);
       if (count === 0) return { route: [], path: [], distance: 0, available: available.length };
 
       let best = null;
-      for (const targets of combinations(available, count)) {
+      const targetChoices = fixedTargets ? [selected] : combinations(available, count);
+      for (const targets of targetChoices) {
         for (const route of permutations(targets)) {
           const connected = connectWaypoints(route, new Set([pattern.fake]));
           if (connected && (!best || connected.distance < best.distance)) {
@@ -686,20 +738,95 @@
       return best;
     }
 
+    function bestR2RouteAtMost(pattern, requestedCount, recoveredR1) {
+      for (let count = requestedCount; count >= 0; count--) {
+        const route = bestR2Route(pattern, count, recoveredR1);
+        if (route) return { ...route, collectedCount: count };
+      }
+      return null;
+    }
+
+    function optimalRoutes(pattern, requestedR1, requestedR2) {
+      const targetCount = Math.min(requestedR1, pattern.r1.length);
+      const targetChoices = targetCount === 0 ? [[]] : combinations(pattern.r1, targetCount);
+      let best = null;
+
+      for (const targets of targetChoices) {
+        const r1Route = bestR1Route(pattern, requestedR1, targets);
+        if (!r1Route) continue;
+        const r2Route = bestR2RouteAtMost(pattern, requestedR2, r1Route.route);
+        if (!r2Route) continue;
+        const totalDistance = r1Route.distance + r2Route.distance;
+        if (
+          !best ||
+          r2Route.collectedCount > best.r2Route.collectedCount ||
+          (r2Route.collectedCount === best.r2Route.collectedCount && totalDistance < best.totalDistance)
+        ) {
+          best = { r1Route, r2Route, totalDistance };
+        }
+      }
+      return best;
+    }
+
+    function syncManualTargets(pattern, requestedCount) {
+      const patternKey = `${pattern.fake}:${pattern.r1.join(",")}`;
+      if (patternKey !== manualPatternKey) {
+        manualPatternKey = patternKey;
+        manualR1Targets = pattern.r1.slice(0, requestedCount);
+      } else {
+        manualR1Targets = manualR1Targets
+          .filter(position => pattern.r1.includes(position))
+          .slice(0, requestedCount);
+      }
+    }
+
+    function renderR1Options(pattern, selectedTargets, requestedCount) {
+      r1Options.innerHTML = "";
+      for (const position of pattern.r1) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = `r1-option${selectedTargets.includes(position) ? " selected" : ""}`;
+        button.textContent = `${position}番`;
+        button.disabled = r1RouteMode.value === "optimal";
+        button.addEventListener("click", () => {
+          if (manualR1Targets.includes(position)) {
+            manualR1Targets = manualR1Targets.filter(target => target !== position);
+          } else if (manualR1Targets.length < requestedCount) {
+            manualR1Targets.push(position);
+          }
+          render();
+        });
+        r1Options.appendChild(button);
+      }
+    }
+
     function renderRoutes(pattern) {
       const requestedR1 = Number(r1CollectCount.value);
       const requestedR2 = Number(r2CollectCount.value);
-      const r1Route = bestR1Route(pattern, requestedR1);
-      const recoveredR1 = r1Route ? r1Route.route : [];
-      const r2Route = bestR2Route(pattern, requestedR2, recoveredR1);
+      syncManualTargets(pattern, requestedR1);
+
+      let r1Route;
+      let r2Route;
+      if (r1RouteMode.value === "optimal") {
+        const optimal = optimalRoutes(pattern, requestedR1, requestedR2);
+        r1Route = optimal?.r1Route || null;
+        r2Route = optimal?.r2Route || null;
+      } else {
+        r1Route = bestR1Route(pattern, requestedR1, manualR1Targets);
+        r2Route = bestR2RouteAtMost(pattern, requestedR2, r1Route?.route || []);
+      }
+      renderR1Options(pattern, r1Route?.route || manualR1Targets, requestedR1);
 
       if (r1Route && r1Route.route.length) {
-        r1RouteResult.textContent = `回収: ${r1Route.route.join(" → ")} / 走行: ${r1Route.path.join(" → ")} / 距離: ${r1Route.distance}マス`;
+        const modeLabel = r1RouteMode.value === "optimal" ? "最適選択" : "手動選択";
+        r1RouteResult.textContent = `${modeLabel}: ${r1Route.route.join(" → ")} / 走行: ${r1Route.path.join(" → ")} / 距離: ${r1Route.distance}マス`;
       } else {
         r1RouteResult.textContent = requestedR1 === 0 ? "回収しません" : "Fを迂回して到達できる回収ルートがありません";
       }
       if (r1Route && requestedR1 > r1Route.available) {
         r1RouteResult.textContent += `（指定${requestedR1}個のうち${r1Route.available}個のみ回収可能）`;
+      } else if (r1RouteMode.value === "manual" && r1Route && r1Route.route.length < requestedR1) {
+        r1RouteResult.textContent += `（あと${requestedR1 - r1Route.route.length}個選択してください）`;
       }
 
       if (r2Route) {
@@ -709,6 +836,9 @@
           `出口 ${r2Route.exit}`
         ];
         r2RouteResult.textContent = `${r2Waypoints.join(" → ")} / 走行: ${r2Route.path.join(" → ")} / 距離: ${r2Route.distance}マス`;
+        if (r2Route.collectedCount < requestedR2) {
+          r2RouteResult.textContent += `（指定${requestedR2}個のうち最大${r2Route.collectedCount}個）`;
+        }
         if ([10, 11, 12].includes(pattern.fake)) {
           r2RouteResult.textContent += `（F=${pattern.fake}を避け、出口${r2Route.exit}へ迂回）`;
         }
@@ -822,6 +952,7 @@
       }, 850);
     });
 
+    r1RouteMode.addEventListener("change", render);
     r1CollectCount.addEventListener("change", render);
     r2CollectCount.addEventListener("change", render);
 
