@@ -600,7 +600,7 @@
     }
 
     function bestR1Route(pattern, requestedCount) {
-      const available = pattern.r1.filter(position => ![5, 6].includes(position));
+      const available = pattern.r1;
       const count = Math.min(requestedCount, available.length);
       if (count === 0) return { route: [], path: [], distance: 0, available: available.length };
 
